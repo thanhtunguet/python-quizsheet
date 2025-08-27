@@ -1,5 +1,11 @@
 # Quiz Sheet Processing API
 
+![Build Status](https://github.com/your-username/python-quizsheet/workflows/Test%20Application/badge.svg)
+![Docker Build](https://github.com/your-username/python-quizsheet/workflows/Build%20and%20Push%20Docker%20Image/badge.svg)
+![Docker Image](https://img.shields.io/docker/image-size/your-dockerhub-username/quiz-processor)
+
+A FastAPI application that processes public Google Sheets containing quiz data and converts them to structured XLSX files using Google's Gemini AI.
+
 ## Setup
 
 ### Requirements
@@ -100,3 +106,65 @@ For production, consider:
 - Setting up proper logging
 - Implementing monitoring and health checks
 - Using container orchestration (Kubernetes, Docker Swarm)
+
+### Pre-built Docker Images
+Docker images are automatically built and pushed to DockerHub via GitHub Actions:
+
+```bash
+# Pull and run the latest image
+docker pull your-dockerhub-username/quiz-processor:latest
+docker run -p 8000:8000 --env-file .env your-dockerhub-username/quiz-processor:latest
+```
+
+## CI/CD Pipeline
+
+### GitHub Actions Workflows
+
+This repository includes automated CI/CD pipelines:
+
+#### 1. Test Workflow (`.github/workflows/test.yml`)
+- **Triggers**: Push to main/develop, Pull Requests
+- **Matrix Testing**: Python 3.10, 3.11, 3.12
+- **Checks**:
+  - Code linting (flake8)
+  - Code formatting (black)
+  - Type checking (mypy)
+  - Import and functionality tests
+  - Health check script validation
+
+#### 2. Docker Build & Push (`.github/workflows/docker-build-push.yml`)
+- **Triggers**: Push to main/develop, Tags, Pull Requests
+- **Features**:
+  - Multi-platform builds (linux/amd64, linux/arm64)
+  - Automatic tagging (latest, version tags, branch names)
+  - Security scanning with Trivy
+  - Caching for faster builds
+  - Only pushes on non-PR events
+
+### Setting Up GitHub Actions
+
+1. **Fork/Clone this repository**
+
+2. **Set up DockerHub secrets** in your GitHub repository:
+   - Go to Settings → Secrets and variables → Actions
+   - Add the following secrets:
+     - `DOCKERHUB_USERNAME`: Your DockerHub username
+     - `DOCKERHUB_TOKEN`: Your DockerHub access token (not password)
+
+3. **Update the README badges** with your GitHub username:
+   ```markdown
+   ![Build Status](https://github.com/YOUR_USERNAME/python-quizsheet/workflows/Test%20Application/badge.svg)
+   ![Docker Build](https://github.com/YOUR_USERNAME/python-quizsheet/workflows/Build%20and%20Push%20Docker%20Image/badge.svg)
+   ![Docker Image](https://img.shields.io/docker/image-size/YOUR_DOCKERHUB_USERNAME/quiz-processor)
+   ```
+
+4. **Push to main branch** to trigger the workflows
+
+### Manual Workflow Triggers
+You can also manually trigger workflows from the GitHub Actions tab in your repository.
+
+### Security Scanning
+The Docker workflow includes Trivy security scanning that:
+- Scans the built image for vulnerabilities
+- Uploads results to GitHub Security tab
+- Provides SARIF format reports for integration
