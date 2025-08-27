@@ -1,7 +1,7 @@
 # Quiz Sheet Processing API
 
-![Build Status](https://github.com/your-username/python-quizsheet/workflows/Test%20Application/badge.svg)
-![Docker Build](https://github.com/your-username/python-quizsheet/workflows/Build%20and%20Push%20Docker%20Image/badge.svg)
+![Build Status](https://github.com/thanhtunguet/python-quizsheet/workflows/Test%20Application/badge.svg)
+![Docker Build](https://github.com/thanhtunguet/python-quizsheet/workflows/Build%20and%20Push%20Docker%20Image/badge.svg)
 ![Docker Image](https://img.shields.io/docker/image-size/your-dockerhub-username/quiz-processor)
 
 A FastAPI application that processes public Google Sheets containing quiz data and converts them to structured XLSX files using Google's Gemini AI.
