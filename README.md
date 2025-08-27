@@ -35,3 +35,20 @@ uvicorn main:app --reload --port 8000
 
 ### Usage
 The API works with **public Google Sheets only**. Make sure your Google Sheet is shared with "Anyone with the link can view" permission.
+
+#### API Endpoint
+- **POST** `/process` - Process a Google Sheet and download quiz XLSX files
+- **Parameters** (form-encoded for easy Swagger UI usage):
+  - `sheet_url`: Google Sheets URL (e.g., `https://docs.google.com/spreadsheets/d/your-sheet-id/edit`)
+  - `sheet_name`: Worksheet tab name (e.g., `Sheet1`)
+
+#### Using Swagger UI
+1. Start the server: `uvicorn main:app --reload --port 8000`
+2. Open http://localhost:8000/docs in your browser
+3. Click on the `/process` endpoint
+4. Click "Try it out"
+5. Fill in the form fields:
+   - **sheet_url**: Paste your public Google Sheets URL
+   - **sheet_name**: Enter the tab/worksheet name
+6. Click "Execute"
+7. Download the generated ZIP file containing XLSX files for each language

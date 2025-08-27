@@ -6,9 +6,8 @@ from typing import List, Dict
 
 import httpx
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Form
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
 from dotenv import load_dotenv
 
 import urllib.parse
@@ -42,9 +41,7 @@ SYSTEM_PROMPT = _load_system_prompt()
 # --------- FastAPI ----------
 app = FastAPI(title="Quiz Sheet → Gemini → XLSX (per language)")
 
-class ProcessBody(BaseModel):
-    sheet_url: str
-    sheet_name: str
+# Removed ProcessBody BaseModel - using Form parameters instead
 
 
 # --------- Helpers ----------
@@ -260,13 +257,20 @@ def root():
 
 
 @app.post("/process")
-async def process(body: ProcessBody):
+async def process(
+    sheet_url: str = Form(..., description="Google Sheets URL (must be public)", example="https://docs.google.com/spreadsheets/d/your-sheet-id/edit"),
+    sheet_name: str = Form(..., description="Name of the worksheet/tab", example="Sheet1")
+):
     """
-    Input: {"sheet_url": "...", "sheet_name": "..."}
-    Output: ZIP chứa các file <Language>.xlsx
+    Process a public Google Sheet and convert quiz data to XLSX files.
+    
+    - **sheet_url**: Google Sheets URL (make sure it's publicly accessible)
+    - **sheet_name**: Name of the worksheet/tab to process
+    
+    Returns a ZIP file containing XLSX files for each language column found.
     """
     try:
-        cols = await _read_sheet_columns(body.sheet_url, body.sheet_name)
+        cols = await _read_sheet_columns(sheet_url, sheet_name)
     except HTTPException:
         raise
     except Exception as e:
@@ -292,9 +296,15 @@ async def process(body: ProcessBody):
             zf.writestr(filename, blob)
     zip_buf.seek(0)
 
+    # Get zip content as bytes
+    zip_content = zip_buf.getvalue()
+    
     return StreamingResponse(
-        zip_buf,
+        io.BytesIO(zip_content),
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="quiz_exports.zip"'}
+        headers={
+            "Content-Disposition": 'attachment; filename="quiz_exports.zip"',
+            "Content-Length": str(len(zip_content))
+        }
     )
 
