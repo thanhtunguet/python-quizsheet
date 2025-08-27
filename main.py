@@ -11,83 +11,33 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-import gspread
-from google.oauth2.service_account import Credentials
+import urllib.parse
 
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
-GOOGLE_CREDS_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+GOOGLE_SHEETS_API_KEY = os.getenv("GOOGLE_SHEETS_API_KEY")
 
 if not GEMINI_API_KEY:
     raise RuntimeError("Missing GEMINI_API_KEY env var")
-if not GOOGLE_CREDS_PATH or not os.path.exists(GOOGLE_CREDS_PATH):
-    raise RuntimeError("Missing/invalid GOOGLE_APPLICATION_CREDENTIALS env var")
+if not GOOGLE_SHEETS_API_KEY:
+    raise RuntimeError("Missing GOOGLE_SHEETS_API_KEY env var")
 
-# --------- System Prompt (nguyên văn bạn cung cấp) ----------
-SYSTEM_PROMPT = """# ROLE
+# --------- Load System Prompt from HBS file ----------
+def _load_system_prompt() -> str:
+    """Load system prompt from system_prompt.hbs file"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    prompt_path = os.path.join(script_dir, "system_prompt.hbs")
+    try:
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        raise RuntimeError(f"System prompt file not found: {prompt_path}")
+    except Exception as e:
+        raise RuntimeError(f"Error loading system prompt: {e}")
 
-Bạn là chuyên viên đào tạo hỗ trợ các công việc:
-
-- Biên soạn câu hỏi, đề thi từ tài liệu có sẵn
-
-- Chuyển đổi bộ câu hỏi có sẵn thành dạng bảng có cấu trúc
-
-- Dịch bộ câu hỏi có sẵn sang một ngôn ngữ khác
-
-
-
-# Context
-
-Một bài quiz là tập hợp nhiều câu hỏi trắc nghiệm với 4 đáp án (A, B, C, D) trong đó có một đáp án đúng và 3 lựa chọn gây nhiễu.
-
-
-
-## Biên soạn câu hỏi từ tài liệu có sẵn
-
-Nếu người dùng gửi cho bạn một tệp tài liệu, bạn hãy dựa vào nội dung tài liệu để tạo ra bộ câu hỏi trắc nghiệm tương ứng.
-
-Các quy tắc cần tuân thủ:
-
-- Đối với trường hợp tài liệu trình bày dạng Q&A, với mỗi câu hỏi, bạn cần tạo ra ít nhất 1 câu hỏi trắc nghiệm tương ứng
-
-- Đối với các tài liệu truyền thống, hãy dựa vào nội dung của mỗi chương, mỗi đầu mục, mỗi luận điểm, ... để tạo thành ít nhất 1 câu hỏi trắc nghiệm tương ứng.
-
-- Đối với yêu cầu dịch thuật, bạn hãy dựa vào nội dung của câu hỏi và ngữa nghĩa của các đáp án để dịch một cách chính xác nhất có thể. Bạn cần ưu tiên các thuật ngữ khoa học, logic dựa trên mục tiêu của câu hỏi. Đối với các câu hỏi thông thường, bạn hãy sử dụng những từ ngữ phổ biến trong văn hóa của ngôn ngữ đích.
-
-- Nếu không được yêu cầu dịch, bạn hãy giữ nguyên ngôn ngữ gốc của tài liệu ban đầu.
-
-- Cần giữ đúng thứ tự các câu hỏi
-
-
-
-# Output format
-
-Kết quả cần được trình bày dạng bảng Markdown với các cột sau:
-
-
-
-- STT (Số thứ tự)
-
-- Câu hỏi
-
-- Đáp án A
-
-- Đáp án B
-
-- Đáp án C
-
-- Đáp án D
-
-- Đáp án đúng
-
-- Ghi chú: trích dẫn vị trí, đoạn văn, đầu mục ... trong tài liệu gốc để người dùng có thể xác thực tính chính xác của đáp án, bỏ trống nếu không cần thiết.
-
-
-
-Lưu ý: bạn không cần giải thích gì thêm. Hãy chỉ tạo đúng bảng câu hỏi kết quả.
-"""
+SYSTEM_PROMPT = _load_system_prompt()
 
 # --------- FastAPI ----------
 app = FastAPI(title="Quiz Sheet → Gemini → XLSX (per language)")
@@ -98,38 +48,64 @@ class ProcessBody(BaseModel):
 
 
 # --------- Helpers ----------
-def _gc_client():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets.readonly",
-        "https://www.googleapis.com/auth/drive.readonly",
-    ]
-    creds = Credentials.from_service_account_file(GOOGLE_CREDS_PATH, scopes=scopes)
-    return gspread.Client(auth=creds).authorize()
+def _extract_sheet_id(sheet_url: str) -> str:
+    """
+    Extract Google Sheet ID from various URL formats.
+    """
+    # Handle different URL formats
+    if "/d/" in sheet_url:
+        # Standard format: https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0
+        return sheet_url.split("/d/")[1].split("/")[0]
+    elif "key=" in sheet_url:
+        # Legacy format: https://docs.google.com/spreadsheets/ccc?key=SHEET_ID
+        return sheet_url.split("key=")[1].split("&")[0]
+    else:
+        raise ValueError(f"Invalid Google Sheets URL format: {sheet_url}")
 
 
-def _read_sheet_columns(sheet_url: str, sheet_name: str) -> List[List[str]]:
+async def _read_sheet_columns(sheet_url: str, sheet_name: str) -> List[List[str]]:
     """
-    Trả về danh sách các cột (tối đa 3).
-    Mỗi cột là list các ô theo thứ tự hàng (row1 = header/language, tiếp theo là nội dung).
+    Read sheet data using Google Sheets API v4 with API key authentication.
+    Returns list of columns (max 3), each column is a list of cells by row order.
     """
-    gc = _gc_client()
-    sh = gc.open_by_url(sheet_url)
-    ws = sh.worksheet(sheet_name)
-    # Lấy toàn bộ vùng có dữ liệu
-    values = ws.get_all_values()  # 2D list [row][col]
+    try:
+        sheet_id = _extract_sheet_id(sheet_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Encode sheet name for URL
+    encoded_sheet_name = urllib.parse.quote(sheet_name)
+    
+    # Google Sheets API v4 endpoint
+    api_url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/{encoded_sheet_name}?key={GOOGLE_SHEETS_API_KEY}"
+    
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(api_url)
+        if resp.status_code != 200:
+            if resp.status_code == 403:
+                raise HTTPException(status_code=403, detail="Access denied. Make sure the sheet is public and API key is valid.")
+            elif resp.status_code == 404:
+                raise HTTPException(status_code=404, detail=f"Sheet '{sheet_name}' not found in the spreadsheet.")
+            else:
+                raise HTTPException(status_code=502, detail=f"Google Sheets API error: {resp.text}")
+        
+        data = resp.json()
+    
+    # Extract values from API response
+    values = data.get("values", [])
     if not values:
         return []
 
-    # Xoay ma trận để lấy theo cột
-    # Giới hạn tối đa 3 cột có dữ liệu thực
-    max_cols = min(3, max(len(r) for r in values))
+    # Convert rows to columns (transpose matrix)
+    # Limit to max 3 columns with actual data
+    max_cols = min(3, max(len(r) for r in values) if values else 0)
     cols = []
     for c in range(max_cols):
         col_vals = []
         for r in values:
             val = r[c] if c < len(r) else ""
             col_vals.append(val)
-        # Cắt bớt ô trống cuối cột
+        # Remove empty trailing cells
         while col_vals and (col_vals[-1] is None or str(col_vals[-1]).strip() == ""):
             col_vals.pop()
         if any(v.strip() for v in col_vals):
@@ -290,7 +266,9 @@ async def process(body: ProcessBody):
     Output: ZIP chứa các file <Language>.xlsx
     """
     try:
-        cols = _read_sheet_columns(body.sheet_url, body.sheet_name)
+        cols = await _read_sheet_columns(body.sheet_url, body.sheet_name)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Không đọc được Google Sheet: {e}")
 
