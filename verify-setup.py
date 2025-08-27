@@ -9,6 +9,7 @@ import sys
 import yaml
 from pathlib import Path
 
+
 def check_file_exists(file_path, description):
     """Check if a file exists and report status."""
     if os.path.exists(file_path):
@@ -18,13 +19,14 @@ def check_file_exists(file_path, description):
         print(f"❌ {description}: {file_path} (MISSING)")
         return False
 
+
 def check_yaml_valid(file_path, description):
     """Check if a YAML file exists and is valid."""
     if not check_file_exists(file_path, description):
         return False
-    
+
     try:
-        with open(file_path, 'r') as f:
+        with open(file_path, "r") as f:
             yaml.safe_load(f)
         print(f"  └─ Valid YAML syntax")
         return True
@@ -32,12 +34,13 @@ def check_yaml_valid(file_path, description):
         print(f"  └─ ❌ YAML Error: {e}")
         return False
 
+
 def main():
     """Main verification function."""
     print("🔍 Verifying Quiz Sheet API Setup...\n")
-    
+
     all_good = True
-    
+
     # Core application files
     print("📦 Core Application Files:")
     all_good &= check_file_exists("main.py", "Main application")
@@ -45,32 +48,36 @@ def main():
     all_good &= check_file_exists("requirements.txt", "Python dependencies")
     all_good &= check_file_exists("healthcheck.py", "Health check script")
     print()
-    
+
     # Docker files
     print("🐳 Docker Configuration:")
     all_good &= check_file_exists("Dockerfile", "Docker image definition")
     all_good &= check_yaml_valid("docker-compose.yml", "Docker Compose configuration")
     all_good &= check_file_exists(".dockerignore", "Docker ignore file")
     print()
-    
+
     # GitHub Actions workflows
     print("🚀 GitHub Actions Workflows:")
-    all_good &= check_yaml_valid(".github/workflows/docker-build-push.yml", "Docker build workflow")
+    all_good &= check_yaml_valid(
+        ".github/workflows/docker-build-push.yml", "Docker build workflow"
+    )
     all_good &= check_yaml_valid(".github/workflows/test.yml", "Test workflow")
     all_good &= check_yaml_valid(".github/dependabot.yml", "Dependabot configuration")
     print()
-    
+
     # Documentation
     print("📚 Documentation:")
     all_good &= check_file_exists("README.md", "Main documentation")
-    all_good &= check_file_exists("setup-github-secrets.md", "GitHub secrets setup guide")
+    all_good &= check_file_exists(
+        "setup-github-secrets.md", "GitHub secrets setup guide"
+    )
     print()
-    
+
     # Git configuration
     print("📝 Git Configuration:")
     all_good &= check_file_exists(".gitignore", "Git ignore file")
     print()
-    
+
     # Environment files
     print("🔧 Environment Configuration:")
     if check_file_exists(".env", "Environment variables"):
@@ -78,13 +85,14 @@ def main():
     else:
         print("  └─ Create .env file with your API keys before running")
     print()
-    
+
     # Check Python imports
     print("🐍 Python Import Test:")
     try:
         import main
+
         print("✅ Main application imports successfully")
-        
+
         # Test system prompt loading
         prompt = main._load_system_prompt()
         if len(prompt) > 0:
@@ -92,12 +100,12 @@ def main():
         else:
             print("❌ System prompt is empty")
             all_good = False
-            
+
     except Exception as e:
         print(f"❌ Import error: {e}")
         all_good = False
     print()
-    
+
     # Final summary
     if all_good:
         print("🎉 All checks passed! Your setup is ready.")
@@ -111,6 +119,7 @@ def main():
     else:
         print("❌ Some checks failed. Please fix the issues above.")
         return 1
+
 
 if __name__ == "__main__":
     sys.exit(main())

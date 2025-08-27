@@ -23,6 +23,7 @@ if not GEMINI_API_KEY:
 if not GOOGLE_SHEETS_API_KEY:
     raise RuntimeError("Missing GOOGLE_SHEETS_API_KEY env var")
 
+
 # --------- Load System Prompt from HBS file ----------
 def _load_system_prompt() -> str:
     """Load system prompt from system_prompt.hbs file"""
@@ -35,6 +36,7 @@ def _load_system_prompt() -> str:
         raise RuntimeError(f"System prompt file not found: {prompt_path}")
     except Exception as e:
         raise RuntimeError(f"Error loading system prompt: {e}")
+
 
 SYSTEM_PROMPT = _load_system_prompt()
 
@@ -69,25 +71,33 @@ async def _read_sheet_columns(sheet_url: str, sheet_name: str) -> List[List[str]
         sheet_id = _extract_sheet_id(sheet_url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
+
     # Encode sheet name for URL
     encoded_sheet_name = urllib.parse.quote(sheet_name)
-    
+
     # Google Sheets API v4 endpoint
     api_url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/{encoded_sheet_name}?key={GOOGLE_SHEETS_API_KEY}"
-    
+
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(api_url)
         if resp.status_code != 200:
             if resp.status_code == 403:
-                raise HTTPException(status_code=403, detail="Access denied. Make sure the sheet is public and API key is valid.")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Access denied. Make sure the sheet is public and API key is valid.",
+                )
             elif resp.status_code == 404:
-                raise HTTPException(status_code=404, detail=f"Sheet '{sheet_name}' not found in the spreadsheet.")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Sheet '{sheet_name}' not found in the spreadsheet.",
+                )
             else:
-                raise HTTPException(status_code=502, detail=f"Google Sheets API error: {resp.text}")
-        
+                raise HTTPException(
+                    status_code=502, detail=f"Google Sheets API error: {resp.text}"
+                )
+
         data = resp.json()
-    
+
     # Extract values from API response
     values = data.get("values", [])
     if not values:
@@ -134,28 +144,30 @@ async def _call_gemini(language: str, raw_text: str) -> str:
     """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     body = {
-        "system_instruction": {
-            "parts": [{"text": SYSTEM_PROMPT}]
-        },
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [
             {
                 "role": "user",
-                "parts": [{
-                    "text": (
-                        f"Ngôn ngữ đầu vào: {language}\n\n"
-                        "Dữ liệu cột (plain text) bên dưới. Hãy CHỈ trả về một bảng Markdown đúng theo Output format ở system prompt, giữ nguyên thứ tự câu hỏi.\n\n"
-                        "---\n"
-                        f"{raw_text}\n"
-                        "---"
-                    )
-                }]
+                "parts": [
+                    {
+                        "text": (
+                            f"Ngôn ngữ đầu vào: {language}\n\n"
+                            "Dữ liệu cột (plain text) bên dưới. Hãy CHỈ trả về một bảng Markdown đúng theo Output format ở system prompt, giữ nguyên thứ tự câu hỏi.\n\n"
+                            "---\n"
+                            f"{raw_text}\n"
+                            "---"
+                        )
+                    }
+                ],
             }
-        ]
+        ],
     }
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(url, json=body)
         if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Gemini API error: {resp.text}")
+            raise HTTPException(
+                status_code=502, detail=f"Gemini API error: {resp.text}"
+            )
         data = resp.json()
     # Lấy text từ candidates[0].content.parts[].text
     try:
@@ -199,6 +211,7 @@ def _parse_markdown_table(md: str) -> List[Dict[str, str]]:
         raise ValueError("Không tìm thấy header của bảng Markdown.")
 
     header_cells = [c.strip() for c in lines[header_idx].split("|")][1:-1]
+
     def canon(h: str) -> str:
         t = h.lower()
         if "stt" in t:
@@ -258,15 +271,21 @@ def root():
 
 @app.post("/process")
 async def process(
-    sheet_url: str = Form(..., description="Google Sheets URL (must be public)", example="https://docs.google.com/spreadsheets/d/your-sheet-id/edit"),
-    sheet_name: str = Form(..., description="Name of the worksheet/tab", example="Sheet1")
+    sheet_url: str = Form(
+        ...,
+        description="Google Sheets URL (must be public)",
+        example="https://docs.google.com/spreadsheets/d/your-sheet-id/edit",
+    ),
+    sheet_name: str = Form(
+        ..., description="Name of the worksheet/tab", example="Sheet1"
+    ),
 ):
     """
     Process a public Google Sheet and convert quiz data to XLSX files.
-    
+
     - **sheet_url**: Google Sheets URL (make sure it's publicly accessible)
     - **sheet_name**: Name of the worksheet/tab to process
-    
+
     Returns a ZIP file containing XLSX files for each language column found.
     """
     try:
@@ -278,7 +297,10 @@ async def process(
 
     payloads = _columns_to_payloads(cols)
     if not payloads:
-        return JSONResponse(status_code=200, content={"message": "Không tìm thấy dữ liệu hợp lệ trong tối đa 3 cột."})
+        return JSONResponse(
+            status_code=200,
+            content={"message": "Không tìm thấy dữ liệu hợp lệ trong tối đa 3 cột."},
+        )
 
     # Gọi Gemini cho từng cột
     results = []
@@ -298,13 +320,12 @@ async def process(
 
     # Get zip content as bytes
     zip_content = zip_buf.getvalue()
-    
+
     return StreamingResponse(
         io.BytesIO(zip_content),
         media_type="application/zip",
         headers={
             "Content-Disposition": 'attachment; filename="quiz_exports.zip"',
-            "Content-Length": str(len(zip_content))
-        }
+            "Content-Length": str(len(zip_content)),
+        },
     )
-
