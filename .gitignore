@@ -3,4 +3,7 @@
 __pycache__/
 *.json
 *.zip
+
+# Docker
+.docker/
 .DS_Store
