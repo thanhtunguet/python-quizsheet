@@ -27,7 +27,7 @@ python-dotenv==1.1.1
 python-multipart==0.0.20
 pytz==2025.2
 PyYAML==6.0.2
-protobuf==3.20.1
+protobuf==6.32.1
 requests==2.32.5
 requests-oauthlib==2.0.0
 rsa==4.9.1
