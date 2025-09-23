@@ -199,49 +199,65 @@ def _parse_markdown_table(md: str) -> List[Dict[str, str]]:
 
     md = _strip_code_fences(md)
     lines = [ln.strip() for ln in md.splitlines() if ln.strip()]
-    # Tìm header + separator
+    
+    # Tìm header + separator - more flexible approach
     header_idx = -1
     for i in range(len(lines) - 1):
         if lines[i].startswith("|") and lines[i].endswith("|"):
-            sep = lines[i + 1]
-            if re.match(r"^\|?\s*[:\-\|\s]+$", sep):
+            # Check if next line is a separator
+            if i + 1 < len(lines):
+                sep = lines[i + 1]
+                if re.match(r"^\|?\s*[:\-\|\s]+$", sep):
+                    header_idx = i
+                    break
+    
+    # If no standard separator found, try to find any table-like structure
+    if header_idx < 0:
+        for i, line in enumerate(lines):
+            if "|" in line and any(keyword in line.lower() for keyword in ["no", "question", "option", "correct", "answer", "stt", "câu hỏi", "đáp án"]):
                 header_idx = i
                 break
+    
     if header_idx < 0:
         raise ValueError("Không tìm thấy header của bảng Markdown.")
 
     header_cells = [c.strip() for c in lines[header_idx].split("|")][1:-1]
 
     def canon(h: str) -> str:
-        t = h.lower()
-        if "stt" in t:
+        t = h.lower().strip()
+        # Handle both English and Vietnamese column names
+        if "no" in t or "stt" in t or t == "#":
             return "STT"
-        if "câu hỏi" in t or "question" in t:
+        if "question" in t or "câu hỏi" in t:
             return "Câu hỏi"
-        if t.endswith("a") or t.endswith(" a"):
+        if "option a" in t or t.endswith("a") or t.endswith(" a") or "đáp án a" in t:
             return "Đáp án A"
-        if t.endswith("b") or t.endswith(" b"):
+        if "option b" in t or t.endswith("b") or t.endswith(" b") or "đáp án b" in t:
             return "Đáp án B"
-        if t.endswith("c") or t.endswith(" c"):
+        if "option c" in t or t.endswith("c") or t.endswith(" c") or "đáp án c" in t:
             return "Đáp án C"
-        if t.endswith("d") or t.endswith(" d"):
+        if "option d" in t or t.endswith("d") or t.endswith(" d") or "đáp án d" in t:
             return "Đáp án D"
-        if "đúng" in t or "correct" in t:
+        if "correct" in t or "đúng" in t or "answer" in t:
             return "Đáp án đúng"
-        if "ghi chú" in t or "note" in t:
+        if "note" in t or "ghi chú" in t or "notes" in t:
             return "Ghi chú"
         return h.strip()
 
     keys = [canon(h) for h in header_cells]
 
     rows = []
-    for i in range(header_idx + 2, len(lines)):
+    # Start from header_idx + 1 (skip separator if exists) or header_idx + 2
+    start_idx = header_idx + 2 if header_idx + 1 < len(lines) and re.match(r"^\|?\s*[:\-\|\s]+$", lines[header_idx + 1]) else header_idx + 1
+    
+    for i in range(start_idx, len(lines)):
         if not (lines[i].startswith("|") and lines[i].endswith("|")):
             continue
         cells = [c.strip() for c in lines[i].split("|")][1:-1]
         if len(cells) < len(keys):
-            # thiếu ô; bỏ qua
-            continue
+            # Pad with empty strings if cells are missing
+            while len(cells) < len(keys):
+                cells.append("")
         row = {keys[j]: cells[j] for j in range(len(keys))}
         # Chuẩn hoá STT → int nếu có
         if "STT" in row:
@@ -274,10 +290,10 @@ async def process(
     sheet_url: str = Form(
         ...,
         description="Google Sheets URL (must be public)",
-        example="https://docs.google.com/spreadsheets/d/your-sheet-id/edit",
+        examples=["https://docs.google.com/spreadsheets/d/your-sheet-id/edit"],
     ),
     sheet_name: str = Form(
-        ..., description="Name of the worksheet/tab", example="Sheet1"
+        ..., description="Name of the worksheet/tab", examples=["Sheet1"]
     ),
 ):
     """
@@ -305,10 +321,21 @@ async def process(
     # Gọi Gemini cho từng cột
     results = []
     for p in payloads:
-        md = await _call_gemini(p["language"], p["rawText"])
-        rows = _parse_markdown_table(md)
-        xlsx_bytes = _rows_to_xlsx_bytes(p["language"], rows)
-        results.append((p["language"], xlsx_bytes))
+        try:
+            md = await _call_gemini(p["language"], p["rawText"])
+            rows = _parse_markdown_table(md)
+            xlsx_bytes = _rows_to_xlsx_bytes(p["language"], rows)
+            results.append((p["language"], xlsx_bytes))
+        except ValueError as e:
+            # If table parsing fails, create an empty file with error info
+            error_rows = [{"Error": f"Failed to parse Gemini response: {str(e)}"}]
+            xlsx_bytes = _rows_to_xlsx_bytes(p["language"], error_rows)
+            results.append((p["language"], xlsx_bytes))
+        except Exception as e:
+            # For other errors, create an empty file with error info
+            error_rows = [{"Error": f"Processing error: {str(e)}"}]
+            xlsx_bytes = _rows_to_xlsx_bytes(p["language"], error_rows)
+            results.append((p["language"], xlsx_bytes))
 
     # Đóng gói ZIP in-memory
     zip_buf = io.BytesIO()
