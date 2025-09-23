@@ -2,13 +2,17 @@ import io
 import os
 import re
 import zipfile
-from typing import List, Dict
+import json
+from typing import List, Dict, Optional
+from datetime import datetime
 
 import httpx
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Form
+from fastapi import FastAPI, HTTPException, Form, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse
 from dotenv import load_dotenv
+import docx
+import PyPDF2
 
 import urllib.parse
 
@@ -40,11 +44,215 @@ def _load_system_prompt() -> str:
 
 SYSTEM_PROMPT = _load_system_prompt()
 
+# --------- Data Models ----------
+class QuizQuestion:
+    def __init__(self, id: str, question: str, options: List[str], correct_answers: List[str], explanation: str):
+        self.id = id
+        self.question = question
+        self.options = options
+        self.correct_answers = correct_answers
+        self.explanation = explanation
+
+class QuizResponse:
+    def __init__(self, questions: List[QuizQuestion]):
+        self.questions = questions
+
 # --------- FastAPI ----------
 app = FastAPI(title="Quiz Sheet → Gemini → XLSX (per language)")
 
 # Removed ProcessBody BaseModel - using Form parameters instead
 
+
+# --------- Document Processing Helpers ----------
+def _extract_text_from_file(file_content: bytes, filename: str) -> str:
+    """Extract text from uploaded document files"""
+    try:
+        if filename.lower().endswith('.pdf'):
+            return _extract_text_from_pdf(file_content)
+        elif filename.lower().endswith(('.doc', '.docx')):
+            return _extract_text_from_docx(file_content)
+        elif filename.lower().endswith('.txt'):
+            return file_content.decode('utf-8')
+        else:
+            raise ValueError(f"Unsupported file type: {filename}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error extracting text from file: {e}")
+
+def _extract_text_from_pdf(file_content: bytes) -> str:
+    """Extract text from PDF file"""
+    try:
+        pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() + "\n"
+        return text.strip()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error reading PDF: {e}")
+
+def _extract_text_from_docx(file_content: bytes) -> str:
+    """Extract text from DOCX file"""
+    try:
+        doc = docx.Document(io.BytesIO(file_content))
+        text = ""
+        for paragraph in doc.paragraphs:
+            text += paragraph.text + "\n"
+        return text.strip()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error reading DOCX: {e}")
+
+def _generate_document_prompt(target_language: str) -> str:
+    """Generate the prompt for document-based quiz generation (matching C# version)"""
+    return f"""You are an expert quiz creator tasked with generating high-quality multiple-choice questions based on document content provided either as plain text or as a file in one of the following formats: .doc, .docx, .xls, .xlsx, .ppt, .pptx, .pdf, or .txt.
+
+Your responsibilities:
+- Analyze the entire content of the document (text or file)
+- Generate up to 100 relevant, non-duplicate multiple-choice questions that collectively cover as much of the content as possible
+- Questions should cover the entire document content but do not need to follow the original order — feel free to shuffle topics for variety
+- Ensure all content must be consistently written in {target_language}
+
+**Difficulty Distribution:**
+- ~20% easy questions
+- ~40% medium and hard questions
+- ~40% very hard / advanced application-level questions. These should combine multiple concepts or present realistic problem-solving scenarios that require applied understanding
+- A deviation of +-5% is acceptable
+
+CRITICAL REQUIREMENTS:
+1. Each question must:
+   - Have 4–6 logically distinct options (A–D or A–E/F), max 200 characters each
+   - Be no more than 300 characters in length
+   - Have 1 or more correct answers selected by their letter (e.g., "A", "C") (all of which must be present in the options array)
+   - Include a brief explanation (max 500 characters)
+2. Option labeling must follow:  
+   - First option = "A", second = "B", third = "C", etc.
+   - `correctAnswers` must list only these letter labels (e.g., "B", "D")
+3. Distribute correct answers evenly across options (A–D or A–E), with no more than 10% deviation between frequencies
+
+OUTPUT FORMAT:
+{{
+  "questions": [
+    {{
+      "id": "1",
+      "question": "What is...",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "correctAnswers": ["A", "C"],
+      "explanation": "This is correct because...",
+    }}
+  ]
+}}
+
+VALIDATION RULES:
+- correctAnswers must contain only option letters corresponding to their index (e.g., "A", "B", etc.)
+- All values in correctAnswers must map to actual options
+- No duplicate or overlapping questions
+- All parts (question, options, explanation) must be consistently written in {target_language}
+- Maintain correct difficulty distribution across the question set
+- Ensure fair distribution of correct answer positions (e.g., avoid clustering on "A" or "B")
+- Output must be valid raw JSON with no markdown formatting, no code blocks, and no extra commentary
+
+INPUT VARIABLES:
+- documentContent or uploadedFile (only one of them will be provided)
+- targetLanguage: {target_language} (e.g., "en", "vi", "id")"""
+
+def _parse_llm_response(response: str) -> Optional[QuizResponse]:
+    """Parse LLM response into QuizResponse object (matching C# version)"""
+    try:
+        clean_response = response.strip()
+        
+        # Remove markdown code blocks if present
+        if clean_response.startswith("```json"):
+            clean_response = clean_response[7:]
+        if clean_response.startswith("```"):
+            clean_response = clean_response[3:]
+        if clean_response.endswith("```"):
+            clean_response = clean_response[:-3]
+        
+        clean_response = clean_response.strip()
+        
+        # Parse JSON
+        data = json.loads(clean_response)
+        
+        questions = []
+        for q_data in data.get("questions", []):
+            question = QuizQuestion(
+                id=str(q_data.get("id", "")),
+                question=q_data.get("question", ""),
+                options=q_data.get("options", []),
+                correct_answers=q_data.get("correctAnswers", []),
+                explanation=q_data.get("explanation", "")
+            )
+            questions.append(question)
+        
+        return QuizResponse(questions)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Error parsing LLM response: {e}")
+
+async def _call_gemini_for_document(document_content: str, target_language: str) -> str:
+    """Call Gemini API for document-based quiz generation"""
+    prompt = _generate_document_prompt(target_language)
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    body = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "text": f"{prompt}\n\nDocument Content:\n{document_content}"
+                    }
+                ],
+            }
+        ],
+    }
+    
+    async with httpx.AsyncClient(timeout=120) as client:  # Longer timeout for document processing
+        resp = await client.post(url, json=body)
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=502, detail=f"Gemini API error: {resp.text}"
+            )
+        data = resp.json()
+    
+    try:
+        candidates = data.get("candidates", [])
+        first = candidates[0]
+        parts = first.get("content", {}).get("parts", [])
+        text = "\n".join(p.get("text", "") for p in parts).strip()
+        return text
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gemini response parse error: {e}")
+
+def _quiz_response_to_xlsx_bytes(quiz_response: QuizResponse, language: str) -> bytes:
+    """Convert QuizResponse to XLSX bytes"""
+    if not quiz_response.questions:
+        return _rows_to_xlsx_bytes(language, [])
+    
+    rows = []
+    for q in quiz_response.questions:
+        row = {
+            "STT": q.id,
+            "Câu hỏi": q.question,
+            "Explanation": q.explanation,
+            "Correct Answers": ", ".join(q.correct_answers),
+        }
+        
+        # Add options A-F
+        for i, option in enumerate(q.options):
+            if i == 0:
+                row["Đáp án A"] = option
+            elif i == 1:
+                row["Đáp án B"] = option
+            elif i == 2:
+                row["Đáp án C"] = option
+            elif i == 3:
+                row["Đáp án D"] = option
+            elif i == 4:
+                row["Đáp án E"] = option
+            elif i == 5:
+                row["Đáp án F"] = option
+        
+        rows.append(row)
+    
+    return _rows_to_xlsx_bytes(language, rows)
 
 # --------- Helpers ----------
 def _extract_sheet_id(sheet_url: str) -> str:
@@ -283,6 +491,69 @@ def _rows_to_xlsx_bytes(language: str, rows: List[Dict[str, str]]) -> bytes:
 @app.get("/")
 def root():
     return {"ok": True, "service": "Quiz Sheet → Gemini → XLSX per language"}
+
+
+@app.post("/generate-quiz-from-document")
+async def generate_quiz_from_document(
+    file: UploadFile = File(..., description="Document file (PDF, DOCX, TXT)"),
+    target_language: str = Form(..., description="Target language code (e.g., 'en', 'vi', 'id')", examples=["en"]),
+):
+    """
+    Generate quiz from uploaded document using Gemini API.
+    
+    This endpoint mimics the C# QuizGeneratorService functionality to test
+    whether issues are with Gemini or the C# implementation.
+    
+    - **file**: Document file (PDF, DOCX, TXT supported)
+    - **target_language**: Language code for the generated quiz (e.g., 'en', 'vi', 'id')
+    
+    Returns an XLSX file with generated quiz questions.
+    """
+    try:
+        # Validate file type
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No file provided")
+        
+        # Read file content
+        file_content = await file.read()
+        if not file_content:
+            raise HTTPException(status_code=400, detail="Empty file")
+        
+        # Extract text from document
+        document_text = _extract_text_from_file(file_content, file.filename)
+        if not document_text.strip():
+            raise HTTPException(status_code=400, detail="No text content found in document")
+        
+        # Call Gemini API
+        llm_response = await _call_gemini_for_document(document_text, target_language)
+        if not llm_response:
+            raise HTTPException(status_code=502, detail="No response from Gemini API")
+        
+        # Parse response
+        quiz_response = _parse_llm_response(llm_response)
+        if not quiz_response or not quiz_response.questions:
+            raise HTTPException(status_code=502, detail="No valid quiz questions generated")
+        
+        # Convert to XLSX
+        xlsx_bytes = _quiz_response_to_xlsx_bytes(quiz_response, target_language)
+        
+        # Generate filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"quiz_generated_{target_language}_{timestamp}.xlsx"
+        
+        return StreamingResponse(
+            io.BytesIO(xlsx_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(xlsx_bytes)),
+            },
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @app.post("/process")
