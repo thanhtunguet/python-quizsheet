@@ -28,7 +28,7 @@ pytz==2025.2
 PyYAML==6.0.3
 python-docx==1.1.2
 PyPDF2==3.0.1
-protobuf==3.20.1
+protobuf==6.33.0
 requests==2.32.5
 requests-oauthlib==2.0.0
 rsa==4.9.1
